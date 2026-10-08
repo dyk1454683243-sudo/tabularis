@@ -1,7 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { reconstructTableQuery, resolveTabPageSize } from "../utils/editor";
+import {
+  buildDuplicatedTab,
+  canDuplicateTab,
+  getTabDisplayTitle,
+  reconstructTableQuery,
+  resolveTabPageSize,
+} from "../utils/editor";
 import { shouldShowStatementSuccess } from "../utils/resultPresentation";
 import { formatRowsForCopy, copyTextToClipboard } from "../utils/clipboard";
 import { onActivationKey } from "../utils/keyboardEvents";
@@ -170,6 +176,11 @@ import type { CommandScope } from "../types/commands";
 import { ROOT_COMMAND_SCOPE_ID } from "../utils/commandScopeStore";
 import { createActiveEditorCommands } from "../utils/editorCommands";
 import { buildForeignKeyFilterClause } from "../utils/foreignKeys";
+import {
+  buildCellValueFilterClause,
+  combineFilterClauses,
+  type CellValueFilterOperator,
+} from "../utils/cellValueFilter";
 import { formatSqlIdentifier } from "../utils/identifiers";
 import {
   createSqlFileTab,
@@ -971,6 +982,17 @@ export const Editor = ({ commandScopeId }: EditorProps) => {
   const clearEntryScrollTops = useCallback((tabId: string) => {
     clearScrollTopsForTab(scrollTopByEntryKeyRef.current, tabId);
   }, []);
+
+  const handleDuplicateTab = useCallback(
+    (tabId: string) => {
+      const source = tabsRef.current.find((tab) => tab.id === tabId);
+      if (!source) return;
+      const duplicate = buildDuplicatedTab(source);
+      if (!duplicate) return;
+      addTab(duplicate, { insertAfterId: source.id, forceNew: true });
+    },
+    [addTab],
+  );
 
   const handleCloseTab = useCallback(
     (tabId: string) => {
@@ -2547,6 +2569,37 @@ export const Editor = ({ commandScopeId }: EditorProps) => {
     ],
   );
 
+  const handleFilterByValue = useCallback(
+    (
+      column: string,
+      operator: CellValueFilterOperator,
+      value: unknown,
+      columnType?: string,
+    ) => {
+      const currentTab = tabsRef.current.find(
+        (tb) => tb.id === activeTabIdRef.current,
+      );
+      if (!currentTab) return;
+
+      const sourceType =
+        columnType ||
+        currentTab.columnMetadata?.find((c) => c.name === column)?.data_type;
+      const added = buildCellValueFilterClause(
+        column,
+        operator,
+        value,
+        activeCapabilities ?? activeDriver ?? null,
+        sourceType,
+      );
+      handleToolbarUpdate(
+        combineFilterClauses(currentTab.filterClause, added),
+        currentTab.sortClause || "",
+        currentTab.limitClause,
+      );
+    },
+    [activeDriver, activeCapabilities, handleToolbarUpdate],
+  );
+
   const handleSort = useCallback(
     (colName: string) => {
       if (!activeTab) return;
@@ -4105,7 +4158,7 @@ export const Editor = ({ commandScopeId }: EditorProps) => {
                   }
                 >
                   <span className="truncate" title={tab.sourceFilePath}>
-                    {tab.title}
+                    {getTabDisplayTitle(tab, tabs)}
                     {tab.sourceFileDirty ? " •" : ""}
                   </span>
                   {tab.type === "console" && isMultiDb && (
@@ -5250,6 +5303,11 @@ export const Editor = ({ commandScopeId }: EditorProps) => {
                       onForeignKeyNavigate={handleForeignKeyNavigate}
                       onForeignKeyShowPanel={handleForeignKeyShowPanel}
                       onForeignKeyHidePanel={() => setActiveFkQuery(null)}
+                      onFilterByValue={
+                        activeTab.type === "table"
+                          ? handleFilterByValue
+                          : undefined
+                      }
                       connectionId={activeConnectionId}
                       onRefresh={handleRefresh}
                       pendingChanges={activeTab.pendingChanges}
@@ -5466,6 +5524,15 @@ export const Editor = ({ commandScopeId }: EditorProps) => {
                     label: t("editor.convertToConsole"),
                     icon: FileCode,
                     action: () => handleConvertToConsole(tabContextMenu.tabId),
+                  },
+                ]
+              : []),
+            ...(contextTab && canDuplicateTab(contextTab.type)
+              ? [
+                  {
+                    label: t("editor.duplicateTab"),
+                    icon: Copy,
+                    action: () => handleDuplicateTab(tabContextMenu.tabId),
                   },
                 ]
               : []),
